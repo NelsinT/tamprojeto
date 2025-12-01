@@ -1,18 +1,20 @@
 from flask import Flask, request
 import psycopg2
-import requests # <--- Nova biblioteca para falar com o ThingsBoard
+import requests 
 import json
 import os
+from datetime import datetime
+import pytz 
 
 app = Flask(__name__)
 
 # --- CONFIGURAÇÕES ---
-# A tua base de dados Neon
+
+# 1. TUA BASE DE DADOS NEON
 DATABASE_URL = "postgresql://neondb_owner:npg_AtR4hBFdcx5K@ep-red-firefly-adwfe8r0-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require"
 
-# --- THINGSBOARD ---
+# 2. TEU THINGSBOARD
 THINGSBOARD_HOST = "https://thingsboard.cloud"
-# COLOCA AQUI O TOKEN QUE COPIASTE DO SITE DO THINGSBOARD:
 ACCESS_TOKEN = "McUD2Mnr8jdjz1hKNNHP" 
 
 def get_db_connection():
@@ -24,7 +26,6 @@ def get_db_connection():
         return None
 
 def enviar_thingsboard(telemetria):
-    """ Envia dados para o gráfico do ThingsBoard """
     try:
         url = f"{THINGSBOARD_HOST}/api/v1/{ACCESS_TOKEN}/telemetry"
         requests.post(url, json=telemetria)
@@ -32,9 +33,17 @@ def enviar_thingsboard(telemetria):
     except Exception as e:
         print(f"Erro ao enviar para ThingsBoard: {e}")
 
+def obter_hora_portugal():
+    try:
+        tz_lisboa = pytz.timezone('Europe/Lisbon')
+        agora = datetime.now(tz_lisboa)
+        return agora.strftime('%d/%m/%Y %H:%M:%S')
+    except:
+        return datetime.now().strftime('%d/%m/%Y %H:%M:%S')
+
 @app.route('/')
 def home():
-    return "Servidor Online com ThingsBoard!"
+    return "Servidor Online!"
 
 @app.route('/validar', methods=['GET'])
 def validar_entrada():
@@ -66,26 +75,31 @@ def validar_entrada():
             cur.execute("INSERT INTO registos (funcionario_id, tipo_movimento) VALUES (%s, %s)", (user_id, novo_movimento))
             conn.commit()
             
-            # --- NOVIDADE: ENVIAR PARA O DASHBOARD ---
+            # 4. Enviar para ThingsBoard com HORA
+            hora_pt = obter_hora_portugal()
+            
             dados_tb = {
                 "funcionario": nome_user,
                 "movimento": novo_movimento,
                 "status": "Acesso Permitido",
-                "ultimo_id": pin_recebido
+                "ultimo_id": pin_recebido,
+                "data_hora": hora_pt 
             }
             enviar_thingsboard(dados_tb)
-            # -----------------------------------------
 
             cur.close()
             conn.close()
             return "1"
         
         else:
-            # Se falhar, também enviamos para o dashboard (para veres quem tentou entrar!)
+            # Enviar erro para ThingsBoard com HORA
+            hora_pt = obter_hora_portugal()
+            
             dados_tb = {
                 "funcionario": "Desconhecido",
                 "status": "Acesso Negado",
-                "ultimo_id": pin_recebido
+                "ultimo_id": pin_recebido,
+                "data_hora": hora_pt
             }
             enviar_thingsboard(dados_tb)
 
@@ -97,3 +111,6 @@ def validar_entrada():
         print(f"Erro: {e}")
         if conn: conn.close()
         return "0"
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
