@@ -44,7 +44,59 @@ def obter_hora_portugal():
 def home():
     return "Servidor Online!"
 
-# --- ROTA ATUALIZADA: MUDAR PIN POR ID ---
+# --- ROTA CRON: SAÍDA AUTOMÁTICA (Para fechar o dia) ---
+@app.route('/cron/saida_automatica', methods=['GET'])
+def saida_automatica():
+    # 1. Liga à Base de Dados
+    conn = get_db_connection()
+    if not conn: return "Erro na Base de Dados"
+    
+    cur = conn.cursor()
+    count_saidas = 0
+    
+    try:
+        # 2. Busca todos os funcionários
+        cur.execute("SELECT id, nome FROM funcionarios WHERE ativo = TRUE")
+        todos = cur.fetchall()
+        
+        hora_pt = obter_hora_portugal()
+
+        for func in todos:
+            u_id = func[0]
+            u_nome = func[1]
+            
+            # 3. Verifica o último movimento de cada um
+            cur.execute("SELECT tipo_movimento FROM registos WHERE funcionario_id = %s ORDER BY id DESC LIMIT 1", (u_id,))
+            ultimo = cur.fetchone()
+            
+            # 4. Se estiver "DENTRO", força a SAÍDA
+            if ultimo and ultimo[0] == "ENTRADA":
+                # Regista SAIDA na BD
+                cur.execute("INSERT INTO registos (funcionario_id, tipo_movimento) VALUES (%s, 'SAIDA')", (u_id,))
+                conn.commit()
+                count_saidas += 1
+                
+                # Envia para o ThingsBoard
+                msg_historico = f"{hora_pt} | {u_nome} | SAIDA (AUTO)"
+                dados_tb = {
+                    "funcionario": u_nome,
+                    "movimento": "SAIDA",
+                    "status": "Saída Automática (Fim do Dia)",
+                    "log_historico": msg_historico,
+                    "hora_saida": hora_pt
+                }
+                enviar_thingsboard(dados_tb)
+        
+        cur.close()
+        conn.close()
+        return f"Processo concluído. Foram fechadas {count_saidas} saídas."
+
+    except Exception as e:
+        if conn: conn.close()
+        return f"Erro: {str(e)}"
+# -----------------------------------------------------
+
+# --- ROTA: MUDAR PIN POR ID ---
 @app.route('/mudar_pin', methods=['POST'])
 def mudar_pin():
     # O ThingsBoard agora envia: {"id_antigo": "1234", "id_novo": "9999"}
