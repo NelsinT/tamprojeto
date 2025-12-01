@@ -12,9 +12,10 @@
       "dest": "projeto/api/index.py"
     }
   ],
-    "crons": [
-  {
-    "path": "/cron/saida_automatica",
-    "schedule": "0 18 * * *"
-  }
+  "crons": [
+    {
+      "path": "/cron/saida_automatica",
+      "schedule": "0 18 * * *"
+    }
+  ]
 }
