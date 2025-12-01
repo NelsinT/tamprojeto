@@ -15,6 +15,7 @@ DATABASE_URL = "postgresql://neondb_owner:npg_AtR4hBFdcx5K@ep-red-firefly-adwfe8
 
 # 2. TEU THINGSBOARD
 THINGSBOARD_HOST = "https://thingsboard.cloud"
+# ⚠️ COLA O TEU TOKEN AQUI EM BAIXO:
 ACCESS_TOKEN = "McUD2Mnr8jdjz1hKNNHP" 
 
 def get_db_connection():
@@ -75,16 +76,24 @@ def validar_entrada():
             cur.execute("INSERT INTO registos (funcionario_id, tipo_movimento) VALUES (%s, %s)", (user_id, novo_movimento))
             conn.commit()
             
-            # 4. Enviar para ThingsBoard com HORA
+            # 4. Enviar para ThingsBoard com HORAS SEPARADAS
             hora_pt = obter_hora_portugal()
             
+            # Dados base (o que é comum)
             dados_tb = {
                 "funcionario": nome_user,
                 "movimento": novo_movimento,
                 "status": "Acesso Permitido",
-                "ultimo_id": pin_recebido,
-                "data_hora": hora_pt 
+                "ultimo_id": pin_recebido
             }
+
+            # Lógica para separar as colunas
+            if novo_movimento == "ENTRADA":
+                dados_tb["hora_entrada"] = hora_pt  # <--- Coluna Entrada
+                # Opcional: Enviar 'null' para saida para limpar visualmente ou manter histórico
+            else:
+                dados_tb["hora_saida"] = hora_pt    # <--- Coluna Saída
+
             enviar_thingsboard(dados_tb)
 
             cur.close()
@@ -92,14 +101,12 @@ def validar_entrada():
             return "1"
         
         else:
-            # Enviar erro para ThingsBoard com HORA
             hora_pt = obter_hora_portugal()
-            
             dados_tb = {
                 "funcionario": "Desconhecido",
                 "status": "Acesso Negado",
                 "ultimo_id": pin_recebido,
-                "data_hora": hora_pt
+                "tentativa_erro": hora_pt
             }
             enviar_thingsboard(dados_tb)
 
