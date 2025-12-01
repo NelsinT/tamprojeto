@@ -9,9 +9,12 @@ import pytz
 app = Flask(__name__)
 
 # --- CONFIGURAÇÕES ---
+# A tua base de dados Neon
 DATABASE_URL = "postgresql://neondb_owner:npg_AtR4hBFdcx5K@ep-red-firefly-adwfe8r0-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require"
 
+# --- THINGSBOARD ---
 THINGSBOARD_HOST = "https://thingsboard.cloud"
+# O teu Token
 ACCESS_TOKEN = "McUD2Mnr8jdjz1hKNNHP" 
 
 def get_db_connection():
@@ -23,6 +26,7 @@ def get_db_connection():
         return None
 
 def enviar_thingsboard(telemetria):
+    """ Envia dados para o gráfico do ThingsBoard """
     try:
         url = f"{THINGSBOARD_HOST}/api/v1/{ACCESS_TOKEN}/telemetry"
         requests.post(url, json=telemetria)
@@ -31,6 +35,7 @@ def enviar_thingsboard(telemetria):
         print(f"Erro ao enviar para ThingsBoard: {e}")
 
 def obter_hora_portugal():
+    """ Calcula a hora certa em Lisboa """
     try:
         tz_lisboa = pytz.timezone('Europe/Lisbon')
         agora = datetime.now(tz_lisboa)
@@ -42,10 +47,10 @@ def obter_hora_portugal():
 def home():
     return "Servidor Online!"
 
-# --- NOVA ROTA: MUDAR PIN ---
+# --- NOVA ROTA: MUDAR PIN (Chamada pelo ThingsBoard) ---
 @app.route('/mudar_pin', methods=['POST'])
 def mudar_pin():
-    # O ThingsBoard vai enviar um JSON: {"nome": "Joao", "novo_pin": "9999"}
+    # O ThingsBoard envia: {"nome": "Joao", "novo_pin": "9999"}
     dados = request.json
     
     if not dados or 'nome' not in dados or 'novo_pin' not in dados:
@@ -59,7 +64,7 @@ def mudar_pin():
     
     cur = conn.cursor()
     try:
-        # Atualiza o PIN do funcionário pelo nome
+        # Atualiza o PIN na base de dados
         cur.execute("UPDATE funcionarios SET pin_code = %s WHERE nome = %s", (novo_pin, nome_funcionario))
         conn.commit()
         
@@ -112,6 +117,8 @@ def validar_entrada():
             
             # 4. Enviar para ThingsBoard
             hora_pt = obter_hora_portugal()
+            
+            # Cria a string para o histórico (Tabela)
             msg_historico = f"{hora_pt} | {nome_user} | {novo_movimento}"
 
             dados_tb = {
@@ -121,6 +128,8 @@ def validar_entrada():
                 "ultimo_id": pin_recebido,
                 "log_historico": msg_historico
             }
+            
+            # Separa as horas para colunas diferentes
             if novo_movimento == "ENTRADA":
                 dados_tb["hora_entrada"] = hora_pt
             else:
@@ -133,6 +142,7 @@ def validar_entrada():
             return "1"
         
         else:
+            # Envia erro para o Dashboard
             hora_pt = obter_hora_portugal()
             msg_historico = f"{hora_pt} | DESCONHECIDO | ACESSO NEGADO"
             
