@@ -60,7 +60,6 @@ def saida_automatica():
     count_saidas = 0
     
     try:
-        # Busca todos os funcionários ativos
         cur.execute("SELECT id, nome FROM funcionarios WHERE ativo = TRUE")
         todos = cur.fetchall()
         
@@ -70,17 +69,15 @@ def saida_automatica():
             u_id = func[0]
             u_nome = func[1]
             
-            # Verifica o último movimento
             cur.execute("SELECT tipo_movimento FROM registos WHERE funcionario_id = %s ORDER BY id DESC LIMIT 1", (u_id,))
             ultimo = cur.fetchone()
             
-            # Se a última coisa foi ENTRADA, força a SAÍDA
             if ultimo and ultimo[0] == "ENTRADA":
                 cur.execute("INSERT INTO registos (funcionario_id, tipo_movimento) VALUES (%s, 'SAIDA')", (u_id,))
                 conn.commit()
                 count_saidas += 1
                 
-                # Avisa o ThingsBoard
+                # Log para o histórico
                 msg_historico = f"{hora_pt} | {u_nome} | SAIDA (AUTO)"
                 dados_tb = {
                     "funcionario": u_nome,
@@ -99,7 +96,7 @@ def saida_automatica():
         if conn: conn.close()
         return f"Erro: {str(e)}"
 
-# 2. ROTA: MUDAR PIN POR ID (Chamada pelo ThingsBoard)
+# 2. ROTA: MUDAR PIN POR ID (Com Log no Histórico)
 @app.route('/mudar_pin', methods=['POST'])
 def mudar_pin():
     dados = request.json
@@ -107,7 +104,6 @@ def mudar_pin():
     if not dados or 'id_antigo' not in dados or 'id_novo' not in dados:
         return jsonify({"erro": "Dados incompletos"}), 400
 
-    # FORÇAR CONVERSÃO PARA TEXTO (STRING) E LIMPAR ESPAÇOS
     id_antigo = str(dados['id_antigo']).strip()
     id_novo = str(dados['id_novo']).strip()
     
@@ -116,21 +112,29 @@ def mudar_pin():
     
     cur = conn.cursor()
     try:
-        # Verificar se o ID antigo existe antes de tentar mudar
         cur.execute("SELECT id FROM funcionarios WHERE pin_code = %s", (id_antigo,))
         existe = cur.fetchone()
         
         if not existe:
-            print(f"❌ Tentativa falhada: ID {id_antigo} não encontrado na BD.")
+            print(f"❌ Tentativa falhada: ID {id_antigo} não encontrado.")
             cur.close()
             conn.close()
             return jsonify({"erro": f"O ID antigo {id_antigo} não existe."}), 404
 
-        # Se existe, atualiza
         cur.execute("UPDATE funcionarios SET pin_code = %s WHERE pin_code = %s", (id_novo, id_antigo))
         conn.commit()
         
+        # --- NOVIDADE: Enviar LOG para o ThingsBoard ---
         print(f"✅ SUCESSO: PIN alterado de '{id_antigo}' para '{id_novo}'")
+        hora_pt = obter_hora_portugal()
+        msg_log = f"{hora_pt} | SISTEMA | PIN ALTERADO: {id_antigo} -> {id_novo}"
+        
+        dados_tb = {
+            "status": "Alteração de PIN",
+            "log_historico": msg_log
+        }
+        enviar_thingsboard(dados_tb)
+        # -----------------------------------------------
         
         cur.close()
         conn.close()
@@ -141,7 +145,7 @@ def mudar_pin():
         if conn: conn.close()
         return jsonify({"erro": str(e)}), 500
 
-# 3. ROTA: VALIDAR ENTRADA (Chamada pelo Arduino)
+# 3. ROTA: VALIDAR ENTRADA
 @app.route('/validar', methods=['GET'])
 def validar_entrada():
     pin_recebido = request.args.get('id')
@@ -151,14 +155,12 @@ def validar_entrada():
     
     cur = conn.cursor()
     try:
-        # 1. Verificar funcionário
         cur.execute("SELECT id, nome FROM funcionarios WHERE pin_code = %s AND ativo = TRUE", (pin_recebido,))
         funcionario = cur.fetchone()
 
         if funcionario:
             user_id, nome_user = funcionario
             
-            # 2. Lógica Entrada/Saída Inteligente
             cur.execute("SELECT tipo_movimento FROM registos WHERE funcionario_id = %s ORDER BY id DESC LIMIT 1", (user_id,))
             ultimo = cur.fetchone()
             
@@ -166,11 +168,9 @@ def validar_entrada():
             if ultimo and ultimo[0] == "ENTRADA":
                 novo_movimento = "SAIDA"
             
-            # 3. Gravar na BD
             cur.execute("INSERT INTO registos (funcionario_id, tipo_movimento) VALUES (%s, %s)", (user_id, novo_movimento))
             conn.commit()
             
-            # 4. Enviar para ThingsBoard
             hora_pt = obter_hora_portugal()
             msg_historico = f"{hora_pt} | {nome_user} | {novo_movimento}"
             
@@ -181,16 +181,14 @@ def validar_entrada():
                 "ultimo_id": pin_recebido,
                 "log_historico": msg_historico
             }
-            # Separa colunas de hora
             if novo_movimento == "ENTRADA": dados_tb["hora_entrada"] = hora_pt
             else: dados_tb["hora_saida"] = hora_pt
             
             enviar_thingsboard(dados_tb)
             
             cur.close(); conn.close()
-            return "1" # SUCESSO
+            return "1" 
         else:
-            # ID Desconhecido
             hora_pt = obter_hora_portugal()
             msg_historico = f"{hora_pt} | DESCONHECIDO | ACESSO NEGADO"
             
@@ -204,7 +202,7 @@ def validar_entrada():
             enviar_thingsboard(dados_tb)
             
             cur.close(); conn.close()
-            return "0" # ERRO
+            return "0" 
             
     except Exception as e:
         print(f"Erro: {e}"); 
