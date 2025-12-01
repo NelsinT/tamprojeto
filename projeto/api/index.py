@@ -16,6 +16,8 @@ DATABASE_URL = "postgresql://neondb_owner:npg_AtR4hBFdcx5K@ep-red-firefly-adwfe8
 THINGSBOARD_HOST = "https://thingsboard.cloud"
 ACCESS_TOKEN = "McUD2Mnr8jdjz1hKNNHP" 
 
+# --- FUNÇÕES AUXILIARES ---
+
 def get_db_connection():
     try:
         conn = psycopg2.connect(DATABASE_URL)
@@ -25,6 +27,7 @@ def get_db_connection():
         return None
 
 def enviar_thingsboard(telemetria):
+    """ Envia dados para o gráfico do ThingsBoard """
     try:
         url = f"{THINGSBOARD_HOST}/api/v1/{ACCESS_TOKEN}/telemetry"
         requests.post(url, json=telemetria)
@@ -33,6 +36,7 @@ def enviar_thingsboard(telemetria):
         print(f"Erro ao enviar para ThingsBoard: {e}")
 
 def obter_hora_portugal():
+    """ Calcula a hora certa em Lisboa """
     try:
         tz_lisboa = pytz.timezone('Europe/Lisbon')
         agora = datetime.now(tz_lisboa)
@@ -40,14 +44,15 @@ def obter_hora_portugal():
     except:
         return datetime.now().strftime('%d/%m/%Y %H:%M:%S')
 
+# --- ROTAS ---
+
 @app.route('/')
 def home():
-    return "Servidor Online!"
+    return "Servidor Online e Pronto!"
 
-# --- ROTA CRON: SAÍDA AUTOMÁTICA (Para fechar o dia) ---
+# 1. ROTA CRON: SAÍDA AUTOMÁTICA (Executada pelo Vercel Cron às 18h)
 @app.route('/cron/saida_automatica', methods=['GET'])
 def saida_automatica():
-    # 1. Liga à Base de Dados
     conn = get_db_connection()
     if not conn: return "Erro na Base de Dados"
     
@@ -55,7 +60,7 @@ def saida_automatica():
     count_saidas = 0
     
     try:
-        # 2. Busca todos os funcionários
+        # Busca todos os funcionários ativos
         cur.execute("SELECT id, nome FROM funcionarios WHERE ativo = TRUE")
         todos = cur.fetchall()
         
@@ -65,18 +70,17 @@ def saida_automatica():
             u_id = func[0]
             u_nome = func[1]
             
-            # 3. Verifica o último movimento de cada um
+            # Verifica o último movimento
             cur.execute("SELECT tipo_movimento FROM registos WHERE funcionario_id = %s ORDER BY id DESC LIMIT 1", (u_id,))
             ultimo = cur.fetchone()
             
-            # 4. Se estiver "DENTRO", força a SAÍDA
+            # Se a última coisa foi ENTRADA, força a SAÍDA
             if ultimo and ultimo[0] == "ENTRADA":
-                # Regista SAIDA na BD
                 cur.execute("INSERT INTO registos (funcionario_id, tipo_movimento) VALUES (%s, 'SAIDA')", (u_id,))
                 conn.commit()
                 count_saidas += 1
                 
-                # Envia para o ThingsBoard
+                # Avisa o ThingsBoard
                 msg_historico = f"{hora_pt} | {u_nome} | SAIDA (AUTO)"
                 dados_tb = {
                     "funcionario": u_nome,
@@ -94,65 +98,67 @@ def saida_automatica():
     except Exception as e:
         if conn: conn.close()
         return f"Erro: {str(e)}"
-# -----------------------------------------------------
 
-# --- ROTA: MUDAR PIN POR ID ---
+# 2. ROTA: MUDAR PIN POR ID (Chamada pelo ThingsBoard)
 @app.route('/mudar_pin', methods=['POST'])
 def mudar_pin():
-    # O ThingsBoard agora envia: {"id_antigo": "1234", "id_novo": "9999"}
     dados = request.json
     
     if not dados or 'id_antigo' not in dados or 'id_novo' not in dados:
-        return jsonify({"erro": "Dados incompletos. Envie id_antigo e id_novo"}), 400
+        return jsonify({"erro": "Dados incompletos"}), 400
 
-    id_antigo = dados['id_antigo']
-    id_novo = dados['id_novo']
+    # FORÇAR CONVERSÃO PARA TEXTO (STRING) E LIMPAR ESPAÇOS
+    id_antigo = str(dados['id_antigo']).strip()
+    id_novo = str(dados['id_novo']).strip()
     
     conn = get_db_connection()
     if not conn: return jsonify({"erro": "Erro na BD"}), 500
     
     cur = conn.cursor()
     try:
-        # Atualiza o PIN onde o PIN antigo corresponde
+        # Verificar se o ID antigo existe antes de tentar mudar
+        cur.execute("SELECT id FROM funcionarios WHERE pin_code = %s", (id_antigo,))
+        existe = cur.fetchone()
+        
+        if not existe:
+            print(f"❌ Tentativa falhada: ID {id_antigo} não encontrado na BD.")
+            cur.close()
+            conn.close()
+            return jsonify({"erro": f"O ID antigo {id_antigo} não existe."}), 404
+
+        # Se existe, atualiza
         cur.execute("UPDATE funcionarios SET pin_code = %s WHERE pin_code = %s", (id_novo, id_antigo))
         conn.commit()
         
-        registos_afetados = cur.rowcount
+        print(f"✅ SUCESSO: PIN alterado de '{id_antigo}' para '{id_novo}'")
+        
         cur.close()
         conn.close()
-        
-        if registos_afetados > 0:
-            print(f"✅ PIN alterado de {id_antigo} para {id_novo}")
-            return jsonify({"status": "sucesso", "mensagem": "PIN alterado com sucesso!"}), 200
-        else:
-            print(f"❌ ID Antigo não encontrado: {id_antigo}")
-            return jsonify({"erro": "ID Antigo nao existe"}), 404
+        return jsonify({"status": "sucesso", "mensagem": "PIN alterado!"}), 200
 
     except Exception as e:
         print(f"Erro SQL: {e}")
         if conn: conn.close()
         return jsonify({"erro": str(e)}), 500
-# ----------------------------
 
+# 3. ROTA: VALIDAR ENTRADA (Chamada pelo Arduino)
 @app.route('/validar', methods=['GET'])
 def validar_entrada():
     pin_recebido = request.args.get('id')
     
     conn = get_db_connection()
     if not conn: return "0"
-
-    cur = conn.cursor()
     
+    cur = conn.cursor()
     try:
         # 1. Verificar funcionário
         cur.execute("SELECT id, nome FROM funcionarios WHERE pin_code = %s AND ativo = TRUE", (pin_recebido,))
         funcionario = cur.fetchone()
 
         if funcionario:
-            user_id = funcionario[0]
-            nome_user = funcionario[1]
-
-            # 2. Lógica Entrada/Saída
+            user_id, nome_user = funcionario
+            
+            # 2. Lógica Entrada/Saída Inteligente
             cur.execute("SELECT tipo_movimento FROM registos WHERE funcionario_id = %s ORDER BY id DESC LIMIT 1", (user_id,))
             ultimo = cur.fetchone()
             
@@ -167,7 +173,7 @@ def validar_entrada():
             # 4. Enviar para ThingsBoard
             hora_pt = obter_hora_portugal()
             msg_historico = f"{hora_pt} | {nome_user} | {novo_movimento}"
-
+            
             dados_tb = {
                 "funcionario": nome_user,
                 "movimento": novo_movimento,
@@ -175,36 +181,33 @@ def validar_entrada():
                 "ultimo_id": pin_recebido,
                 "log_historico": msg_historico
             }
-            if novo_movimento == "ENTRADA":
-                dados_tb["hora_entrada"] = hora_pt
-            else:
-                dados_tb["hora_saida"] = hora_pt
-
+            # Separa colunas de hora
+            if novo_movimento == "ENTRADA": dados_tb["hora_entrada"] = hora_pt
+            else: dados_tb["hora_saida"] = hora_pt
+            
             enviar_thingsboard(dados_tb)
-
-            cur.close()
-            conn.close()
-            return "1"
-        
+            
+            cur.close(); conn.close()
+            return "1" # SUCESSO
         else:
+            # ID Desconhecido
             hora_pt = obter_hora_portugal()
             msg_historico = f"{hora_pt} | DESCONHECIDO | ACESSO NEGADO"
             
             dados_tb = {
-                "funcionario": "Desconhecido",
-                "status": "Acesso Negado",
-                "ultimo_id": pin_recebido,
-                "tentativa_erro": hora_pt,
+                "funcionario": "Desconhecido", 
+                "status": "Acesso Negado", 
+                "ultimo_id": pin_recebido, 
+                "tentativa_erro": hora_pt, 
                 "log_historico": msg_historico
             }
             enviar_thingsboard(dados_tb)
-
-            cur.close()
-            conn.close()
-            return "0"
-
+            
+            cur.close(); conn.close()
+            return "0" # ERRO
+            
     except Exception as e:
-        print(f"Erro: {e}")
+        print(f"Erro: {e}"); 
         if conn: conn.close()
         return "0"
 
